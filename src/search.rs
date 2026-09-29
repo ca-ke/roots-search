@@ -12,8 +12,6 @@ const NAME_WEIGHT: f64 = 3.0;
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
 
-/// Palavras de perguntas sobre código que não dizem onde procurar: funcionais (PT/EN)
-/// e genéricas ("arquivo", "code", "find"). Termos com sentido em código ficam de fora.
 const STOPWORDS: &[&str] = &[
     "a", "o", "as", "os", "um", "uma", "de", "da", "do", "das", "dos", "em", "no", "na", "nos",
     "nas", "por", "para", "pra", "com", "sem", "que", "qual", "quais", "onde", "como", "quando",
@@ -25,17 +23,16 @@ const STOPWORDS: &[&str] = &[
     "files", "code", "find", "show", "search", "look", "looking", "there",
 ];
 
-/// Dependências e artefatos: enormes e nunca são a resposta, nem com `--all`.
 const SKIP_DIRS: &[&str] = &[
     ".git", "target", "node_modules", "dist", "vendor", ".next", ".venv", "__pycache__",
 ];
 
 pub struct Candidate {
     pub path: PathBuf,
+    pub content: String,
     pub snippets: Vec<String>,
 }
 
-/// Termo da query. Casa por token inteiro ou por prefixo (`authentication` → `auth`).
 struct Term {
     full: String,
     stem: String,
@@ -62,15 +59,12 @@ impl Term {
     }
 }
 
-/// Um arquivo que casa com a query: quanto cada termo aparece (`tf`) e o tamanho em tokens.
 struct Doc {
     path: PathBuf,
     tf: Vec<f64>,
     len: f64,
 }
 
-/// Busca os `max` arquivos que mais combinam com a query (BM25). É um filtro barato:
-/// o Jev decide a relevância depois.
 pub fn candidates(root: &Path, query: &str, all: bool, max: usize) -> Vec<Candidate> {
     let terms = query_terms(query);
     if terms.is_empty() {
@@ -98,11 +92,13 @@ pub fn candidates(root: &Path, query: &str, all: bool, max: usize) -> Vec<Candid
 
     scored
         .into_iter()
-        .map(|(_, d)| Candidate { snippets: best_snippets(&read_text(&d.path), &terms), path: d.path })
+        .map(|(_, d)| {
+            let content = read_text(&d.path);
+            Candidate { snippets: best_snippets(&content, &terms), content, path: d.path }
+        })
         .collect()
 }
 
-/// Termos da query sem stopwords. Se só sobrarem stopwords, usa-as em vez de não buscar.
 fn query_terms(query: &str) -> Vec<Term> {
     let words: Vec<String> = tokenize(query).into_iter().filter(|w| w.chars().count() >= 2).collect();
     let useful: Vec<String> =
@@ -111,8 +107,6 @@ fn query_terms(query: &str) -> Vec<Term> {
     chosen.into_iter().map(Term::new).collect()
 }
 
-/// Percorre `root` e devolve os arquivos que casam com algum termo, junto do tamanho do
-/// corpus (todos os arquivos vistos) e do tamanho médio, que o BM25 precisa.
 fn read_docs(root: &Path, terms: &[Term], all: bool) -> (Vec<Doc>, f64, f64) {
     let walker = WalkBuilder::new(root)
         .standard_filters(!all)
@@ -152,16 +146,13 @@ fn read_docs(root: &Path, terms: &[Term], all: bool) -> (Vec<Doc>, f64, f64) {
     (docs, corpus_size, avg_len)
 }
 
-/// Conteúdo do arquivo, ou vazio se for grande demais ou não for texto.
-pub fn read_text(path: &Path) -> String {
+fn read_text(path: &Path) -> String {
     match fs::metadata(path) {
         Ok(m) if m.len() <= MAX_FILE_BYTES => fs::read_to_string(path).unwrap_or_default(),
         _ => String::new(),
     }
 }
 
-/// As linhas que mais casam com a query (termos distintos, exatos valendo mais que
-/// prefixos), na ordem em que aparecem no arquivo.
 fn best_snippets(content: &str, terms: &[Term]) -> Vec<String> {
     let mut lines: Vec<(f64, usize, &str)> = content
         .lines()
@@ -183,13 +174,10 @@ fn best_snippets(content: &str, terms: &[Term]) -> Vec<String> {
         .collect()
 }
 
-/// `.env`, `.env.local`... nunca são lidos nem enviados ao Jev, nem com `--all`.
-/// O `.env.example` é seguro e continua entrando.
 fn is_secret(name: &str) -> bool {
     (name == ".env" || name.starts_with(".env.")) && !name.ends_with(".example")
 }
 
-/// Palavras minúsculas, separadas por símbolos, `snake_case` e `camelCase`.
 fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut cur = String::new();

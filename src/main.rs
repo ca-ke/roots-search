@@ -8,31 +8,28 @@ use clap::Parser;
 
 use search::Candidate;
 
-/// Quantos dos melhores da 1ª passada o Jev relê com o conteúdo inteiro.
-const FINALISTS: usize = 10;
-/// Limite de conteúdo por arquivo na 2ª passada.
 const MAX_CONTENT_CHARS: usize = 8_000;
 
-/// Busca arquivos relevantes para uma pergunta, com o Jev decidindo a relevância.
+/// Find the files relevant to a question, with Jev judging relevance.
 #[derive(Parser)]
 #[command(name = "rs", version)]
 struct Cli {
-    /// Inclui arquivos ocultos e ignora .gitignore
+    /// Include hidden files and ignore .gitignore
     #[arg(short, long)]
     all: bool,
 
-    /// O que você procura
+    /// What you are looking for
     query: String,
 
-    /// Diretório inicial da busca
+    /// Directory to search from
     #[arg(default_value = ".")]
     path: PathBuf,
 
-    /// Máximo de candidatos enviados ao Jev
-    #[arg(short, long, default_value_t = 50)]
+    /// How many files Jev reads (the top ones by BM25)
+    #[arg(short, long, default_value_t = 20)]
     limit: usize,
 
-    /// Relevância mínima (0 a 1) para exibir um resultado
+    /// Minimum relevance (0 to 1) to show a result
     #[arg(short, long, default_value_t = 0.5)]
     min: f64,
 }
@@ -57,15 +54,9 @@ fn run(cli: &Cli) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
-    // 1ª passada: caminho e linhas que casam, barato, só para achar os arquivos certos.
-    let previews: Vec<String> = candidates.iter().map(preview).collect();
-    let mut ranked = rank(jev::score(&cli.query, &previews)?, candidates);
-    ranked.truncate(FINALISTS);
-
-    // 2ª passada: o Jev lê o conteúdo dos finalistas e dá a nota final.
-    let finalists: Vec<Candidate> = ranked.into_iter().map(|(_, c)| c).collect();
-    let contents: Vec<String> = finalists.iter().map(content).collect();
-    let ranked = rank(jev::score(&cli.query, &contents)?, finalists);
+    let files: Vec<String> = candidates.iter().map(describe).collect();
+    let mut ranked: Vec<_> = jev::score(&cli.query, &files)?.into_iter().zip(candidates).collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     let mut found = false;
     for (score, c) in ranked.into_iter().filter(|(s, _)| *s >= cli.min) {
@@ -78,17 +69,7 @@ fn run(cli: &Cli) -> anyhow::Result<bool> {
     Ok(found)
 }
 
-fn rank(scores: Vec<f64>, candidates: Vec<Candidate>) -> Vec<(f64, Candidate)> {
-    let mut ranked: Vec<_> = scores.into_iter().zip(candidates).collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-    ranked
-}
-
-fn preview(c: &Candidate) -> String {
-    format!("Path: \"{}\". Matching lines: {}", c.path.display(), c.snippets.join(" | "))
-}
-
-fn content(c: &Candidate) -> String {
-    let text: String = search::read_text(&c.path).chars().take(MAX_CONTENT_CHARS).collect();
+fn describe(c: &Candidate) -> String {
+    let text: String = c.content.chars().take(MAX_CONTENT_CHARS).collect();
     format!("Path: \"{}\". Content:\n{text}", c.path.display())
 }
